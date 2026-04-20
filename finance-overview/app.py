@@ -49,7 +49,10 @@ if uploaded_file:
     ).dt.date
 
     # Rå linje (til regler senere)
-    df["raw_text"] = df_raw.astype(str).agg(" | ".join, axis=1)
+    df["raw_text"] = df_raw.apply(
+        lambda row: " | ".join([x for x in row if pd.notna(x)]),
+        axis=1
+    )
 
     # own_description starter som orig_description
     df["own_description"] = df["orig_description"]
