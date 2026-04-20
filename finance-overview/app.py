@@ -3,42 +3,41 @@ import pandas as pd
 from supabase import create_client
 
 # ================================
-# Streamlit setup
+# Setup
 # ================================
-st.set_page_config(
-    page_title="Privat økonomi",
-    layout="wide"
-)
+st.set_page_config(page_title="Privat økonomi", layout="wide")
 st.title("💳 Min privatøkonomi")
 
-# ================================
-# Supabase
-# ================================
 supabase = create_client(
     st.secrets["SUPABASE_URL"],
-    st.secrets["SUPABASE_KEY"],
+    st.secrets["SUPABASE_KEY"]
 )
 
-USER_ID = "janus"  # bruges til RLS
+USER_ID = "janus"
+
+
+# ================================
+# Hent kategorier
+# ================================
+categories = supabase.table("categories") \
+    .select("id, name") \
+    .eq("is_active", True) \
+    .execute().data
+
+cat_name_to_id = {c["name"]: c["id"] for c in categories}
+cat_id_to_name = {c["id"]: c["name"] for c in categories}
 
 
 # ================================
 # CSV Upload
 # ================================
-st.header("1️⃣ Upload CSV fra netbank")
+st.header("1️⃣ Upload CSV")
 
-uploaded_file = st.file_uploader("Vælg CSV-fil", type="csv")
+file = st.file_uploader("CSV fra netbank", type="csv")
 
-if uploaded_file:
-    # --- Læs CSV (semikolon, ingen header) ---
-    df_raw = pd.read_csv(
-        uploaded_file,
-        sep=";",
-        header=None,
-        dtype=str,
-    )
+if file:
+    df_raw = pd.read_csv(file, sep=";", header=None, dtype=str)
 
-    # --- Map relevante kolonner ---
     df = pd.DataFrame({
         "own_description": df_raw[0].fillna(""),
         "orig_description": df_raw[1].fillna(""),
@@ -46,7 +45,6 @@ if uploaded_file:
         "date_raw": df_raw[8],
     })
 
-    # --- Rens beløb (1.201,44 → 1201.44) ---
     df["amount"] = (
         df["amount_raw"]
         .str.replace(".", "", regex=False)
@@ -54,116 +52,91 @@ if uploaded_file:
         .astype(float)
     )
 
-    # --- Konverter dato ---
     df["date_booked"] = pd.to_datetime(
-        df["date_raw"],
-        format="%d-%m-%Y",
-        errors="coerce"
+        df["date_raw"], format="%d-%m-%Y", errors="coerce"
     ).dt.date
 
-    # --- raw_text (hurtig og robust) ---
     df["raw_text"] = (
-        df_raw
-        .fillna("")
-        .astype(str)
-        .agg(" | ".join, axis=1)
+        df_raw.fillna("").astype(str).agg(" | ".join, axis=1)
     )
 
-    # --- Endeligt datasæt ---
-    df = df[
-        [
-            "date_booked",
-            "amount",
-            "own_description",
-            "orig_description",
-            "raw_text",
-        ]
-    ]
-
-    # Fjern ugyldige rækker
     df = df.dropna(subset=["date_booked", "amount"])
 
-    # ================================
-    # Preview
-    # ================================
-    st.subheader("📄 Forhåndsvisning")
-    st.dataframe(df, width="stretch")
+    st.dataframe(df[["date_booked", "amount", "own_description"]], width="stretch")
 
-    # ================================
-    # Batch insert
-    # ================================
     if st.button("💾 Gem transaktioner"):
-        with st.spinner("Gemmer transaktioner..."):
-            try:
-                records = [
-                    {
-                        "date_booked": row.date_booked.isoformat(),
-                        "amount": row.amount,
-                        "own_description": row.own_description,
-                        "orig_description": row.orig_description,
-                        "raw_text": row.raw_text,
-                        "user_id": USER_ID,
-                    }
-                    for row in df.itertuples(index=False)
-                ]
-
-                supabase.table("transactions").insert(records).execute()
-
-            except Exception as e:
-                st.error(f"Fejl ved indsættelse i databasen:\n{e}")
-                st.stop()
-
-        st.success(f"✅ {len(records)} transaktioner gemt")
-
-        # --- Automatisk kategorisering ---
         try:
+            records = [{
+                "user_id": USER_ID,
+                "date_booked": r.date_booked.isoformat(),
+                "amount": r.amount,
+                "own_description": r.own_description,
+                "orig_description": r.orig_description,
+                "raw_text": r.raw_text,
+            } for r in df.itertuples(index=False)]
+
+            supabase.table("transactions").insert(records).execute()
             supabase.rpc("run_auto_categorization", {}).execute()
-            st.info("⚡ Automatisk kategorisering kørt")
+
+            st.success(f"✅ {len(records)} transaktioner gemt og kategoriseret")
+
         except Exception as e:
-            st.warning(f"Kunne ikke køre automatisk kategorisering:\n{e}")
-
-
-# ================================
-# Manuel auto-kategorisering
-# ================================
-st.header("⚡ Automatisk kategorisering")
-
-if st.button("Kør auto-kategorisering igen"):
-    with st.spinner("Anvender regler..."):
-        try:
-            supabase.rpc("run_auto_categorization", {}).execute()
-        except Exception as e:
-            st.error(f"Fejl ved auto-kategorisering:\n{e}")
+            st.error(e)
             st.stop()
 
-    st.success("✅ Kategorisering færdig")
-
 
 # ================================
-# Vis seneste transaktioner
+# Manuel kategorisering
 # ================================
-st.header("2️⃣ Seneste transaktioner")
+st.header("2️⃣ Manuel kategorisering")
 
-try:
-    res = (
-        supabase
-        .table("transactions")
-        .select(
-            "date_booked, amount, own_description, orig_description, category_id"
+txs = supabase.table("transactions") \
+    .select("id, date_booked, amount, orig_description, category_id") \
+    .eq("user_id", USER_ID) \
+    .order("date_booked", desc=True) \
+    .limit(30) \
+    .execute().data
+
+for t in txs:
+    with st.expander(f"{t['date_booked']} | {t['amount']} kr | {t['orig_description']}"):
+
+        current_cat = cat_id_to_name.get(t["category_id"], "(Ingen)")
+        selected = st.selectbox(
+            "Kategori",
+            ["(Ingen)"] + list(cat_name_to_id.keys()),
+            index=(list(cat_name_to_id.keys()).index(current_cat) + 1)
+            if current_cat in cat_name_to_id else 0,
+            key=f"cat_{t['id']}"
         )
-        .eq("user_id", USER_ID)
-        .order("date_booked", desc=True)
-        .limit(50)
-        .execute()
-    )
 
-    if res.data:
-        st.dataframe(
-            pd.DataFrame(res.data),
-            width="stretch"
-        )
-    else:
-        st.info("Ingen transaktioner gemt endnu.")
+        if st.button("Gem kategori", key=f"save_{t['id']}") and selected != "(Ingen)":
+            cat_id = cat_name_to_id[selected]
 
-except Exception as e:
-    st.error(f"Fejl ved hentning af transaktioner:\n{e}")
+            # Opdater transaction
+            supabase.table("transactions").update({
+                "category_id": cat_id
+            }).eq("id", t["id"]).execute()
+
+            # Log override
+            supabase.table("category_overrides").insert({
+                "transaction_id": t["id"],
+                "category_id": cat_id
+            }).execute()
+
+            # Lær regel
+            keyword = t["orig_description"].strip().upper()
+
+            exists = supabase.table("rules") \
+                .select("id") \
+                .eq("keyword", keyword) \
+                .limit(1) \
+                .execute().data
+
+            if not exists:
+                supabase.table("rules").insert({
+                    "keyword": keyword,
+                    "category_id": cat_id,
+                    "priority": 100
+                }).execute()
+
+            st.success("✅ Kategori gemt og regel lært")
