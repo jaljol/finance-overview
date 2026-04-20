@@ -30,7 +30,7 @@ st.header("1️⃣ Upload CSV fra netbank")
 uploaded_file = st.file_uploader("Vælg CSV-fil", type="csv")
 
 if uploaded_file:
-    # --- Læs CSV (din fil: ; og ingen header) ---
+    # --- Læs CSV (semikolon, ingen header) ---
     df_raw = pd.read_csv(
         uploaded_file,
         sep=";",
@@ -38,7 +38,7 @@ if uploaded_file:
         dtype=str,
     )
 
-    # --- Map kolonner ---
+    # --- Map relevante kolonner ---
     df = pd.DataFrame({
         "own_description": df_raw[0].fillna(""),
         "orig_description": df_raw[1].fillna(""),
@@ -46,7 +46,7 @@ if uploaded_file:
         "date_raw": df_raw[8],
     })
 
-    # --- Rens beløb ---
+    # --- Rens beløb (1.201,44 → 1201.44) ---
     df["amount"] = (
         df["amount_raw"]
         .str.replace(".", "", regex=False)
@@ -69,7 +69,7 @@ if uploaded_file:
         .agg(" | ".join, axis=1)
     )
 
-    # --- Slutdatasæt ---
+    # --- Endeligt datasæt ---
     df = df[
         [
             "date_booked",
@@ -94,29 +94,33 @@ if uploaded_file:
     # ================================
     if st.button("💾 Gem transaktioner"):
         with st.spinner("Gemmer transaktioner..."):
-            records = [
-                {
-                    "date_booked": row.date_booked.isoformat(),
-                    "amount": row.amount,
-                    "own_description": row.own_description,
-                    "orig_description": row.orig_description,
-                    "raw_text": row.raw_text,
-                    "user_id": USER_ID,
-                }
-                for row in df.itertuples(index=False)
-            ]
+            try:
+                records = [
+                    {
+                        "date_booked": row.date_booked.isoformat(),
+                        "amount": row.amount,
+                        "own_description": row.own_description,
+                        "orig_description": row.orig_description,
+                        "raw_text": row.raw_text,
+                        "user_id": USER_ID,
+                    }
+                    for row in df.itertuples(index=False)
+                ]
 
-            result = supabase.table("transactions").insert(records).execute()
+                supabase.table("transactions").insert(records).execute()
 
-            if result.error:
-                st.error(result.error)
+            except Exception as e:
+                st.error(f"Fejl ved indsættelse i databasen:\n{e}")
                 st.stop()
 
         st.success(f"✅ {len(records)} transaktioner gemt")
 
-        # --- Kør auto-kategorisering automatisk ---
-        supabase.rpc("run_auto_categorization", {}).execute()
-        st.info("⚡ Automatisk kategorisering kørt")
+        # --- Automatisk kategorisering ---
+        try:
+            supabase.rpc("run_auto_categorization", {}).execute()
+            st.info("⚡ Automatisk kategorisering kørt")
+        except Exception as e:
+            st.warning(f"Kunne ikke køre automatisk kategorisering:\n{e}")
 
 
 # ================================
@@ -126,10 +130,12 @@ st.header("⚡ Automatisk kategorisering")
 
 if st.button("Kør auto-kategorisering igen"):
     with st.spinner("Anvender regler..."):
-        result = supabase.rpc("run_auto_categorization", {}).execute()
-        if result.error:
-            st.error(result.error)
+        try:
+            supabase.rpc("run_auto_categorization", {}).execute()
+        except Exception as e:
+            st.error(f"Fejl ved auto-kategorisering:\n{e}")
             st.stop()
+
     st.success("✅ Kategorisering færdig")
 
 
@@ -138,22 +144,26 @@ if st.button("Kør auto-kategorisering igen"):
 # ================================
 st.header("2️⃣ Seneste transaktioner")
 
-res = (
-    supabase
-    .table("transactions")
-    .select(
-        "date_booked, amount, own_description, orig_description, category_id"
+try:
+    res = (
+        supabase
+        .table("transactions")
+        .select(
+            "date_booked, amount, own_description, orig_description, category_id"
+        )
+        .eq("user_id", USER_ID)
+        .order("date_booked", desc=True)
+        .limit(50)
+        .execute()
     )
-    .eq("user_id", USER_ID)
-    .order("date_booked", desc=True)
-    .limit(50)
-    .execute()
-)
 
-if res.data:
-    st.dataframe(
-        pd.DataFrame(res.data),
-        width="stretch"
-    )
-else:
-    st.info("Ingen transaktioner gemt endnu.")
+    if res.data:
+        st.dataframe(
+            pd.DataFrame(res.data),
+            width="stretch"
+        )
+    else:
+        st.info("Ingen transaktioner gemt endnu.")
+
+except Exception as e:
+    st.error(f"Fejl ved hentning af transaktioner:\n{e}")
