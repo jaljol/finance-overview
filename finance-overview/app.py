@@ -2,51 +2,51 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
-# ---------- Streamlit ----------
+# ================================
+# Streamlit setup
+# ================================
 st.set_page_config(
     page_title="Privat økonomi",
     layout="wide"
 )
-
 st.title("💳 Min privatøkonomi")
 
-
-# ---------- Supabase ----------
+# ================================
+# Supabase
+# ================================
 supabase = create_client(
     st.secrets["SUPABASE_URL"],
-    st.secrets["SUPABASE_KEY"]
+    st.secrets["SUPABASE_KEY"],
 )
 
+USER_ID = "janus"  # bruges til RLS
 
-# ---------- CSV upload ----------
+
+# ================================
+# CSV Upload
+# ================================
 st.header("1️⃣ Upload CSV fra netbank")
 
-uploaded_file = st.file_uploader(
-    "Vælg CSV-fil",
-    type="csv"
-)
+uploaded_file = st.file_uploader("Vælg CSV-fil", type="csv")
 
 if uploaded_file:
-    # 1) Læs CSV: ; som separator, ingen header
+    # --- Læs CSV (din fil: ; og ingen header) ---
     df_raw = pd.read_csv(
         uploaded_file,
         sep=";",
         header=None,
-        dtype=str
+        dtype=str,
     )
 
-    # 2) Map CSV-kolonner til DB-struktur
+    # --- Map kolonner ---
     df = pd.DataFrame({
-        # ✅ som ønsket:
         "own_description": df_raw[0].fillna(""),
         "orig_description": df_raw[1].fillna(""),
-
-        # beløb og dato
         "amount_raw": df_raw[4],
         "date_raw": df_raw[8],
     })
 
-    # 3) Rens beløb (fx 1.201,44 → 1201.44)
+    # --- Rens beløb ---
     df["amount"] = (
         df["amount_raw"]
         .str.replace(".", "", regex=False)
@@ -54,22 +54,22 @@ if uploaded_file:
         .astype(float)
     )
 
-    # 4) Konverter dato (dd-mm-yyyy)
+    # --- Konverter dato ---
     df["date_booked"] = pd.to_datetime(
         df["date_raw"],
         format="%d-%m-%Y",
         errors="coerce"
     ).dt.date
 
-    # 5) Saml hele CSV-rækken som raw_text (ROBUST LØSNING)
-    df["raw_text"] = df_raw.apply(
-        lambda row: " | ".join(
-            [x for x in row if pd.notna(x)]
-        ),
-        axis=1
+    # --- raw_text (hurtig og robust) ---
+    df["raw_text"] = (
+        df_raw
+        .fillna("")
+        .astype(str)
+        .agg(" | ".join, axis=1)
     )
 
-    # 6) Behold kun kolonner, der passer til DB
+    # --- Slutdatasæt ---
     df = df[
         [
             "date_booked",
@@ -80,35 +80,62 @@ if uploaded_file:
         ]
     ]
 
-    # 7) Fjern rækker der ikke kan gemmes (NOT NULL-felter)
+    # Fjern ugyldige rækker
     df = df.dropna(subset=["date_booked", "amount"])
 
-
-    # ---------- Preview ----------
+    # ================================
+    # Preview
+    # ================================
     st.subheader("📄 Forhåndsvisning")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
-
-    # ---------- Gem i Supabase ----------
+    # ================================
+    # Batch insert
+    # ================================
     if st.button("💾 Gem transaktioner"):
-        with st.spinner("Gemmer transaktioner i databasen..."):
-            count = 0
+        with st.spinner("Gemmer transaktioner..."):
+            records = [
+                {
+                    "date_booked": row.date_booked.isoformat(),
+                    "amount": row.amount,
+                    "own_description": row.own_description,
+                    "orig_description": row.orig_description,
+                    "raw_text": row.raw_text,
+                    "user_id": USER_ID,
+                }
+                for row in df.itertuples(index=False)
+            ]
 
-            for _, row in df.iterrows():
-                supabase.table("transactions").insert({
-                    "date_booked": row["date_booked"].isoformat(),
-                    "amount": row["amount"],
-                    "own_description": row["own_description"],
-                    "orig_description": row["orig_description"],
-                    "raw_text": row["raw_text"],
-                }).execute()
+            result = supabase.table("transactions").insert(records).execute()
 
-                count += 1
+            if result.error:
+                st.error(result.error)
+                st.stop()
 
-        st.success(f"✅ {count} transaktioner gemt")
+        st.success(f"✅ {len(records)} transaktioner gemt")
+
+        # --- Kør auto-kategorisering automatisk ---
+        supabase.rpc("run_auto_categorization", {}).execute()
+        st.info("⚡ Automatisk kategorisering kørt")
 
 
-# ---------- Vis gemte transaktioner ----------
+# ================================
+# Manuel auto-kategorisering
+# ================================
+st.header("⚡ Automatisk kategorisering")
+
+if st.button("Kør auto-kategorisering igen"):
+    with st.spinner("Anvender regler..."):
+        result = supabase.rpc("run_auto_categorization", {}).execute()
+        if result.error:
+            st.error(result.error)
+            st.stop()
+    st.success("✅ Kategorisering færdig")
+
+
+# ================================
+# Vis seneste transaktioner
+# ================================
 st.header("2️⃣ Seneste transaktioner")
 
 res = (
@@ -117,6 +144,7 @@ res = (
     .select(
         "date_booked, amount, own_description, orig_description, category_id"
     )
+    .eq("user_id", USER_ID)
     .order("date_booked", desc=True)
     .limit(50)
     .execute()
@@ -125,7 +153,7 @@ res = (
 if res.data:
     st.dataframe(
         pd.DataFrame(res.data),
-        use_container_width=True
+        width="stretch"
     )
 else:
     st.info("Ingen transaktioner gemt endnu.")
