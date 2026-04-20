@@ -6,7 +6,64 @@ from supabase import create_client
 # Setup
 # ================================
 st.set_page_config(page_title="Privat økonomi", layout="wide")
+st.markdown("""
+<style>
+/* Generel fonte & spacing */
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+}
+
+/* Titler */
+h1 {
+    font-size: 2.2rem;
+    margin-bottom: 0.5rem;
+}
+h2 {
+    margin-top: 2.5rem;
+}
+
+/* Kort-look */
+.card {
+    background-color: #ffffff;
+    border-radius: 16px;
+    padding: 1.2rem 1.4rem;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.06);
+}
+
+/* Beløb */
+.amount-positive {
+    color: #16a34a;
+    font-weight: 600;
+}
+.amount-negative {
+    color: #dc2626;
+    font-weight: 600;
+}
+
+/* Badge */
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background-color: #e5e7eb;
+}
+.badge-auto {
+    background-color: #dbeafe;
+    color: #1d4ed8;
+}
+.badge-manual {
+    background-color: #dcfce7;
+    color: #166534;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 st.title("💳 Min privatøkonomi")
+st.caption("Privat overblik over dine transaktioner · Automatisk & manuelt kategoriseret")
 
 supabase = create_client(
     st.secrets["SUPABASE_URL"],
@@ -14,7 +71,6 @@ supabase = create_client(
 )
 
 USER_ID = "janus"
-
 
 # ================================
 # Hent kategorier
@@ -27,6 +83,18 @@ categories = supabase.table("categories") \
 cat_name_to_id = {c["name"]: c["id"] for c in categories}
 cat_id_to_name = {c["id"]: c["name"] for c in categories}
 
+
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown('<div class="card">💰 <b>Saldo (30 dage)</b><br>12.345 kr</div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="card">📊 <b>Udgifter</b><br>−4.321 kr</div>', unsafe_allow_html=True)
+
+with col3:
+    st.markdown('<div class="card">🏷️ <b>Kategoriseret</b><br>87 %</div>', unsafe_allow_html=True)
 
 # ================================
 # CSV Upload
